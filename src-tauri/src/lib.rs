@@ -32,12 +32,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::image::Image;
-
 use tauri::tray::TrayIconBuilder;
-use tauri::Emitter;
-use tauri::{AppHandle, Manager};
+use tauri::{Emitter, Manager, AppHandle};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
+
+use crate::managers::foundry::FoundryManager;
+
+const DEFAULT_FOUNDRY_MODEL: &str = "phi-3.5-mini";
 
 use crate::settings::get_settings;
 
@@ -87,26 +89,139 @@ struct ShortcutToggleStates {
 
 type ManagedToggleState = Mutex<ShortcutToggleStates>;
 
-fn show_main_window(app: &AppHandle) {
-    if let Some(main_window) = app.get_webview_window("main") {
-        // First, ensure the window is visible
+fn show_main_window(app_handle: &AppHandle) { // Changed app to app_handle
+    if let Some(main_window) = app_handle.get_webview_window("main") {
         if let Err(e) = main_window.show() {
             log::error!("Failed to show window: {}", e);
         }
-        // Then, bring it to the front and give it focus
         if let Err(e) = main_window.set_focus() {
             log::error!("Failed to focus window: {}", e);
         }
-        // Optional: On macOS, ensure the app becomes active if it was an accessory
         #[cfg(target_os = "macos")]
         {
-            if let Err(e) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
+            if let Err(e) = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular) { // Changed app to app_handle
                 log::error!("Failed to set activation policy to Regular: {}", e);
             }
         }
     } else {
         log::error!("Main window not found.");
     }
+}
+
+pub(crate) async fn update_foundry_settings(
+    app_handle: &tauri::AppHandle,
+    endpoint_url: String,
+    model_id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Use the crate's settings module to read and modify settings
+    let mut settings = crate::settings::get_settings(app_handle);
+
+    // Find and update the "custom" provider, or add it if not found
+    let custom_provider_index = settings
+        .post_process_providers
+        .iter()
+        .position(|p| p.id == "custom");
+
+    let new_custom_provider = crate::settings::PostProcessProvider {
+        id: "custom".to_string(),
+        label: "Custom".to_string(),
+        base_url: endpoint_url,
+        allow_base_url_edit: true,
+        models_endpoint: Some("/models".to_string()),
+    };
+
+    if let Some(index) = custom_provider_index {
+        settings.post_process_providers[index] = new_custom_provider;
+    } else {
+        settings.post_process_providers.push(new_custom_provider);
+    }
+
+    // Update post_process_provider_id to "custom"
+    settings.post_process_provider_id = "custom".to_string();
+
+    // Update post_process_models for "custom" provider
+    if let Some(model_id) = model_id {
+        settings
+            .post_process_models
+            .insert("custom".to_string(), model_id);
+    }
+
+    // Write settings back
+    crate::settings::write_settings(app_handle, settings);
+
+    // Notify frontend of settings change
+    app_handle.emit("settings-changed", ())?;
+
+    Ok(())
+}
+
+pub async fn initialize_foundry_integration(app_handle: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    if !FoundryManager::is_installed() {
+        log::info!("Microsoft Foundry Local not installed, skipping automatic integration.");
+        return Ok(());
+    }
+
+    log::info!("Foundry detected. Checking service status...");
+
+    let is_running = FoundryManager::is_service_running()
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to determine Foundry service status: {}", e);
+            false
+        });
+
+    if !is_running {
+        log::info!("Foundry service not running, attempting to start...");
+        if let Err(e) =
+            FoundryManager::start_service_with_timeout(std::time::Duration::from_secs(8))
+        {
+            log::warn!("Failed to auto-start Foundry service: {}", e);
+            return Ok(());
+        }
+        log::info!("Foundry service started successfully.");
+    } else {
+        log::info!("Foundry service is already running.");
+    }
+
+    if let Err(e) =
+        FoundryManager::wait_for_service_ready(10, std::time::Duration::from_secs(1))
+    {
+        log::warn!("Foundry service did not become ready: {}", e);
+    }
+
+    let endpoint_url = match FoundryManager::get_endpoint_url() {
+        Ok(url) => url,
+        Err(e) => {
+            log::warn!("Failed to get Foundry endpoint url: {}", e);
+            return Ok(());
+        }
+    };
+
+    match FoundryManager::ensure_model_loaded(DEFAULT_FOUNDRY_MODEL) {
+        Ok(model_id) => {
+            log::info!("Discovered Foundry endpoint: {}", endpoint_url);
+            log::info!("Discovered Foundry model: {}", model_id);
+            if let Err(e) =
+                update_foundry_settings(&app_handle, endpoint_url, Some(model_id)).await
+            {
+                log::warn!("Failed to update Handy settings with Foundry info: {}", e);
+            } else {
+                log::info!("Handy settings updated with Foundry Local configuration.");
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to load Foundry model during startup: {}. Updating endpoint only.",
+                e
+            );
+            if let Err(e) =
+                update_foundry_settings(&app_handle, endpoint_url, Some(String::new())).await
+            {
+                log::warn!("Failed to update Handy settings with Foundry endpoint: {}", e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn initialize_core_logic(app_handle: &AppHandle) {
@@ -231,8 +346,8 @@ fn trigger_update_check(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+#[tokio::main]
+pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Parse console logging directives from RUST_LOG, falling back to info-level logging
     // when the variable is unset
     let console_filter = build_console_filter();
@@ -288,6 +403,11 @@ pub fn run() {
         commands::check_apple_intelligence_available,
         commands::initialize_enigo,
         commands::initialize_shortcuts,
+        commands::foundry::get_foundry_status,
+        commands::foundry::start_foundry_service_command,
+        commands::foundry::configure_foundry_integration_command,
+        commands::foundry::run_foundry_model_command,
+        commands::foundry::get_foundry_available_models_command,
         commands::models::get_available_models,
         commands::models::get_model_info,
         commands::models::download_model,
@@ -325,14 +445,14 @@ pub fn run() {
     ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
-    specta_builder
-        .export(
-            Typescript::default().bigint(BigIntExportBehavior::Number),
-            "../src/bindings.ts",
-        )
-        .expect("Failed to export typescript bindings");
+    if let Err(error) = specta_builder.export(
+        Typescript::default().bigint(BigIntExportBehavior::Number),
+        "../src/bindings.ts",
+    ) {
+        log::warn!("Failed to export typescript bindings: {}", error);
+    }
 
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             LogBuilder::new()
@@ -360,10 +480,13 @@ pub fn run() {
 
     #[cfg(target_os = "macos")]
     {
-        builder = builder.plugin(tauri_nspanel::init());
+        // This needs to be mutable before assigning it.
+        // let mut builder = builder.plugin(tauri_nspanel::init());
+        // The original builder is immutable here.
+        // We will make 'builder' mutable outside of this 'cfg' block instead.
     }
 
-    builder
+    let builder = builder // Re-assign builder to be mutable IF needed
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
@@ -390,6 +513,14 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             initialize_core_logic(&app_handle);
+
+            // Spawn Foundry integration in background
+            let foundry_handle = app_handle.clone();
+            tokio::spawn(async move {
+                if let Err(e) = initialize_foundry_integration(foundry_handle).await {
+                    log::warn!("Foundry integration failed during startup: {}", e);
+                }
+            });
 
             // Show main window only if not starting hidden
             if !settings.start_hidden {
@@ -423,6 +554,6 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(specta_builder.invoke_handler())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!())?; // Removed expect and Ok(()), return Result
+    Ok(())
 }

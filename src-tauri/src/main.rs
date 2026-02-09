@@ -12,5 +12,5 @@ fn main() {
         }
     }
 
-    handy_app_lib::run()
+    handy_app_lib::run().expect("Failed to run Handy app");
 }

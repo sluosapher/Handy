@@ -449,6 +449,23 @@
       }
     }
   },
+  "foundry": {
+    "notInstalled": {
+      "title": "Microsoft Foundry Local Not Installed",
+      "description": "Handy can use local AI models via Microsoft Foundry Local for post-processing. Click \"Install Foundry\" to get started.",
+      "installButton": "Install Foundry"
+    },
+    "installedButNotRunning": {
+      "title": "Microsoft Foundry Local Service Detected",
+      "description": "Handy has detected Microsoft Foundry Local, but the service is not running. Click \"Start & Configure\" to automatically start the service and configure Handy.",
+      "startButton": "Start & Configure",
+      "configuringButton": "Configuring..."
+    },
+    "dismissButton": "Dismiss",
+    "error": {
+      "startAndConfigure": "Failed to start or configure Microsoft Foundry Local. Please check console for details or try manually starting Foundry. Error: {{error}}"
+    }
+  },
   "footer": {
     "downloadingModel": "Downloading {{model}}...",
     "checkingUpdates": "Checking for updates...",
