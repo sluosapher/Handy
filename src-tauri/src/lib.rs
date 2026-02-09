@@ -404,6 +404,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         commands::initialize_enigo,
         commands::initialize_shortcuts,
         commands::foundry::get_foundry_status,
+        commands::foundry::install_foundry_local_command,
         commands::foundry::start_foundry_service_command,
         commands::foundry::configure_foundry_integration_command,
         commands::foundry::run_foundry_model_command,

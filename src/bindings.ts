@@ -433,6 +433,14 @@ async getFoundryStatus() : Promise<Result<FoundryStatus, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async installFoundryLocalCommand() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("install_foundry_local_command") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async startFoundryServiceCommand() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("start_foundry_service_command") };
@@ -740,7 +748,7 @@ export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine"
 export type FoundryConfig = { endpoint_url: string; model_id: string }
-export type FoundryStatus = { installed: boolean; running: boolean; endpoint_url: string | null; model_id: string | null }
+export type FoundryStatus = { installed: boolean; running: boolean; endpoint_url: string | null; model_id: string | null; model_cached: boolean }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null }
 /**
  * Result of changing keyboard implementation

@@ -7,9 +7,17 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 pub struct FoundryManager;
 
 impl FoundryManager {
+    fn build_foundry_command() -> Command {
+        if let Some(path) = Self::get_executable_path() {
+            Command::new(path)
+        } else {
+            Command::new("foundry")
+        }
+    }
+
     fn run_foundry_command(args: &[&str]) -> Result<Output> {
         log::info!("Foundry CLI request: foundry {}", args.join(" "));
-        let output = Command::new("foundry").args(args).output()?;
+        let output = Self::build_foundry_command().args(args).output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         log::info!(
@@ -23,11 +31,11 @@ impl FoundryManager {
 
     /// Check if Foundry is installed by looking for the executable and checking it's in PATH
     pub fn is_installed() -> bool {
-        Command::new("foundry")
+        Self::build_foundry_command()
             .arg("--help")
             .output()
             .map(|output| output.status.success())
-            .unwrap_or(false)
+            .unwrap_or_else(|_| Self::get_executable_path().is_some())
     }
 
     /// Get the path to Foundry executable (Placeholder, not actively used in current design but useful)
@@ -45,6 +53,65 @@ impl FoundryManager {
         locations.iter()
             .map(PathBuf::from)
             .find(|path| path.exists())
+    }
+
+    pub fn get_version() -> Result<String> {
+        let output = Self::build_foundry_command()
+            .arg("--version")
+            .output()
+            .or_else(|_| {
+                Self::get_executable_path()
+                    .ok_or_else(|| {
+                        Box::<dyn std::error::Error + Send + Sync>::from(
+                            "Foundry executable not found",
+                        )
+                    })
+                    .and_then(|path| {
+                        Command::new(path)
+                            .arg("--version")
+                            .output()
+                            .map_err(|e| e.into())
+                    })
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Foundry '--version' command failed: {}", stderr).into());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let version = stdout.lines().next().unwrap_or("").trim();
+        if version.is_empty() {
+            return Err("Foundry '--version' output was empty".into());
+        }
+
+        Ok(version.to_string())
+    }
+
+    pub fn install_foundry_local() -> Result<String> {
+        #[cfg(target_os = "windows")]
+        {
+            if Self::is_installed() {
+                return Self::get_version();
+            }
+
+            log::info!("Installing Microsoft Foundry Local via winget...");
+            let output = Command::new("winget")
+                .args(&["install", "Microsoft.FoundryLocal"])
+                .output()?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("winget install failed: {}", stderr).into());
+            }
+
+            Self::get_version()
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err("Foundry Local installation is only supported on Windows.".into())
+        }
     }
 
     /// Check if Foundry service is running based on `foundry service list` output
@@ -156,6 +223,54 @@ impl FoundryManager {
             .collect();
 
         Ok(models)
+    }
+
+    /// Download a specific model with Foundry, e.g., `foundry model download phi-3.5-mini`
+    pub fn download_model(model_name: &str) -> Result<()> {
+        log::info!("Attempting to download Foundry model '{}'...", model_name);
+        let output = Self::run_foundry_command(&["model", "download", model_name])?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to download Foundry model '{}': {}", model_name, stderr).into());
+        }
+
+        log::info!(
+            "Foundry model '{}' download command executed. Output: {}",
+            model_name,
+            String::from_utf8_lossy(&output.stdout)
+        );
+        Ok(())
+    }
+
+    /// Ensure model is downloaded before attempting to load it.
+    pub fn ensure_model_downloaded(model_name: &str) -> Result<()> {
+        if Self::is_model_cached(model_name)? {
+            return Ok(());
+        }
+
+        Self::download_model(model_name)?;
+        Ok(())
+    }
+
+    /// Check cache list to see if a model is already downloaded.
+    pub fn is_model_cached(model_name: &str) -> Result<bool> {
+        let output = Self::run_foundry_command(&["cache", "list"])?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.to_lowercase().contains("not running")
+                || stderr.to_lowercase().contains("not running")
+            {
+                return Ok(false);
+            }
+            return Err(format!("Foundry 'cache list' command failed: {}", stderr).into());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout
+            .lines()
+            .any(|line| line.to_lowercase().contains(&model_name.to_lowercase())))
     }
 
     pub fn wait_for_service_ready(

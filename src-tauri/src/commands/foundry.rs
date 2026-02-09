@@ -4,12 +4,41 @@ use specta::Type;
 use crate::managers::foundry::FoundryManager;
 use crate::{initialize_foundry_integration, update_foundry_settings};
 
+const DEFAULT_FOUNDRY_MODEL: &str = "phi-3.5-mini";
+
+async fn wait_for_model_cached(
+    model_name: &str,
+    attempts: usize,
+    delay: std::time::Duration,
+) -> Result<(), String> {
+    for attempt in 1..=attempts {
+        let model = model_name.to_string();
+        let cached = tokio::task::spawn_blocking(move || {
+            FoundryManager::is_model_cached(&model)
+        })
+            .await
+            .map_err(|e| format!("Failed to check Foundry cache: {}", e))?
+            .map_err(|e| format!("Failed to check Foundry cache: {}", e))?;
+
+        if cached {
+            return Ok(());
+        }
+
+        if attempt < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    Err("Foundry model was not cached in time.".to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct FoundryStatus {
     pub installed: bool,
     pub running: bool,
     pub endpoint_url: Option<String>,
     pub model_id: Option<String>,
+    pub model_cached: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -25,6 +54,7 @@ pub async fn get_foundry_status(_app_handle: tauri::AppHandle) -> Result<Foundry
     let mut running = false;
     let mut endpoint_url = None;
     let mut model_id = None;
+    let mut model_cached = false;
 
     if installed {
         running = FoundryManager::is_service_running()
@@ -32,6 +62,14 @@ pub async fn get_foundry_status(_app_handle: tauri::AppHandle) -> Result<Foundry
                 log::warn!("Failed to check Foundry service running status: {}", e);
                 false
             });
+
+        if running {
+            model_cached = FoundryManager::is_model_cached(DEFAULT_FOUNDRY_MODEL)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to check Foundry model cache: {}", e);
+                    false
+                });
+        }
 
         if running {
             match FoundryManager::get_endpoint_url() {
@@ -52,6 +90,7 @@ pub async fn get_foundry_status(_app_handle: tauri::AppHandle) -> Result<Foundry
         running,
         endpoint_url,
         model_id,
+        model_cached,
     })
 }
 
@@ -68,23 +107,52 @@ pub async fn start_foundry_service_command(
         .map_err(|e| format!("Failed to start Foundry service: {}", e))?;
     log::info!("Foundry service started via command.");
 
-    const DEFAULT_FOUNDRY_MODEL: &str = "phi-3.5-mini";
-    if let Err(e) = FoundryManager::run_model(DEFAULT_FOUNDRY_MODEL) {
-        log::warn!(
-            "Failed to run default Foundry model '{}' after service start: {}",
-            DEFAULT_FOUNDRY_MODEL,
-            e
-        );
-    } else {
-        log::info!(
-            "Successfully instructed Foundry to run default model '{}' after service start.",
-            DEFAULT_FOUNDRY_MODEL
-        );
-    }
+    // Kick off model load in the background. The first load may download the model.
+    let app_handle_clone = app_handle.clone();
+    tokio::spawn(async move {
+        let load_result = tokio::task::spawn_blocking(|| {
+            FoundryManager::ensure_model_downloaded(DEFAULT_FOUNDRY_MODEL)?;
+            FoundryManager::run_model(DEFAULT_FOUNDRY_MODEL)
+        })
+        .await;
 
-    if let Err(e) = initialize_foundry_integration(app_handle).await {
-        log::warn!("Post-start Foundry integration failed: {}", e);
-    }
+        match load_result {
+            Ok(Ok(())) => {
+                log::info!(
+                    "Successfully instructed Foundry to run default model '{}'.",
+                    DEFAULT_FOUNDRY_MODEL
+                );
+            }
+            Ok(Err(e)) => {
+                log::warn!(
+                    "Failed to run default Foundry model '{}' after service start: {}",
+                    DEFAULT_FOUNDRY_MODEL,
+                    e
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "Foundry model load task failed for '{}': {}",
+                    DEFAULT_FOUNDRY_MODEL,
+                    e
+                );
+            }
+        }
+
+        if let Err(e) = wait_for_model_cached(
+            DEFAULT_FOUNDRY_MODEL,
+            120,
+            std::time::Duration::from_secs(3),
+        )
+        .await
+        {
+            log::warn!("Foundry model did not appear in cache: {}", e);
+        }
+
+        if let Err(e) = initialize_foundry_integration(app_handle_clone).await {
+            log::warn!("Post-start Foundry integration failed: {}", e);
+        }
+    });
 
     Ok(())
 }
@@ -98,8 +166,28 @@ pub async fn configure_foundry_integration_command(
         return Err("Foundry Local is not installed.".to_string());
     }
 
-    if let Err(e) = FoundryManager::start_service() {
-        return Err(format!("Failed to ensure Foundry service is running: {}", e));
+    let running = FoundryManager::is_service_running()
+        .map_err(|e| format!("Failed to check Foundry service status: {}", e))?;
+    if !running {
+        FoundryManager::start_service_with_timeout(std::time::Duration::from_secs(8))
+            .map_err(|e| format!("Failed to ensure Foundry service is running: {}", e))?;
+    }
+
+    tokio::task::spawn_blocking(|| {
+        FoundryManager::ensure_model_downloaded(DEFAULT_FOUNDRY_MODEL)
+    })
+    .await
+    .map_err(|e| format!("Failed to download Foundry model: {}", e))?
+    .map_err(|e| format!("Failed to download Foundry model: {}", e))?;
+
+    if let Err(e) = wait_for_model_cached(
+        DEFAULT_FOUNDRY_MODEL,
+        120,
+        std::time::Duration::from_secs(3),
+    )
+    .await
+    {
+        log::warn!("Foundry model cache check timed out: {}", e);
     }
 
     let (endpoint_url, model_id) = FoundryManager::get_endpoint_info()
@@ -127,4 +215,15 @@ pub async fn run_foundry_model_command(model_name: String) -> Result<(), String>
 pub async fn get_foundry_available_models_command() -> Result<Vec<String>, String> {
     FoundryManager::get_available_models()
         .map_err(|e| format!("Failed to get available Foundry models: {}", e))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn install_foundry_local_command() -> Result<String, String> {
+    let version = tokio::task::spawn_blocking(FoundryManager::install_foundry_local)
+        .await
+        .map_err(|e| format!("Foundry install task failed: {}", e))?
+        .map_err(|e| format!("Failed to install Foundry Local: {}", e))?;
+
+    Ok(version)
 }
