@@ -189,7 +189,7 @@ impl FoundryManager {
         Ok((endpoint, model_id))
     }
 
-    /// Load a specific model with Foundry, e.g., `foundry model load phi-3.5-mini`
+    /// Load a specific model with Foundry, e.g., `foundry model load phi-4-mini`
     pub fn run_model(model_name: &str) -> Result<()> {
         log::info!("Attempting to load Foundry model '{}'...", model_name);
         let output = Self::run_foundry_command(&["model", "load", model_name])?;
@@ -225,7 +225,7 @@ impl FoundryManager {
         Ok(models)
     }
 
-    /// Download a specific model with Foundry, e.g., `foundry model download phi-3.5-mini`
+    /// Download a specific model with Foundry, e.g., `foundry model download phi-4-mini`
     pub fn download_model(model_name: &str) -> Result<()> {
         log::info!("Attempting to download Foundry model '{}'...", model_name);
         let output = Self::run_foundry_command(&["model", "download", model_name])?;
@@ -412,7 +412,7 @@ fn extract_model_id(output: &str) -> Result<String> {
     // Expected output (example):
     // Models running in service:
     //     Alias                          Model ID
-    // 🟢  phi-3.5-mini                   Phi-3.5-mini-instruct-openvino-gpu:1
+    // 🟢  phi-4-mini                     Phi-4-mini-instruct-openvino-gpu:1
     for line in sanitized.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {

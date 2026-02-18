@@ -462,7 +462,7 @@
     },
     "installedButNotRunning": {
       "title": "Microsoft Foundry Local Service Detected",
-      "description": "Handy has detected Microsoft Foundry Local, but the service is not running. Click \"Download Model\" to download the phi-3.5-mini model (typically 3-5 minutes) and configure Handy.",
+      "description": "Handy has detected Microsoft Foundry Local, but the service is not running. Click \"Download Model\" to download the phi-4-mini model (typically 3-5 minutes) and configure Handy.",
       "startButton": "Download Model",
       "configuringButton": "Configuring...",
       "downloadingButton": "Downloading...",
@@ -471,7 +471,7 @@
     },
     "modelNotCached": {
       "title": "Foundry Model Not Downloaded",
-      "description": "The phi-3.5-mini model is not in the Foundry cache. Click \"Download Model\" to download it (typically 3-5 minutes)."
+      "description": "The phi-4-mini model is not in the Foundry cache. Click \"Download Model\" to download it (typically 3-5 minutes)."
     },
     "dismissButton": "Dismiss",
     "error": {

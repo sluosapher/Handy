@@ -39,7 +39,7 @@ use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKi
 
 use crate::managers::foundry::FoundryManager;
 
-const DEFAULT_FOUNDRY_MODEL: &str = "phi-3.5-mini";
+const DEFAULT_FOUNDRY_MODEL: &str = "phi-4-mini";
 
 use crate::settings::get_settings;
 

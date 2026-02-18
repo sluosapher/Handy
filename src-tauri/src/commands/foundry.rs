@@ -4,7 +4,7 @@ use specta::Type;
 use crate::managers::foundry::FoundryManager;
 use crate::{initialize_foundry_integration, update_foundry_settings};
 
-const DEFAULT_FOUNDRY_MODEL: &str = "phi-3.5-mini";
+const DEFAULT_FOUNDRY_MODEL: &str = "phi-4-mini";
 
 async fn wait_for_model_cached(
     model_name: &str,
